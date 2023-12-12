@@ -479,7 +479,8 @@ class SimReferenceArgument(SimFunctionArgument):
 
     def get_value(self, state, **kwargs):
         ptr_val = self.ptr_loc.get_value(state, **kwargs)
-        return self.main_loc.get_value(state, stack_base=ptr_val, **kwargs)
+        kwargs['stack_base'] = ptr_val #Jingyu, original is 'return self.main_loc.get_value(state, stack_base=ptr_val, **kwargs)'
+        return self.main_loc.get_value(state, **kwargs)
 
     def set_value(self, state, value, **kwargs):
         ptr_val = self.ptr_loc.get_value(state, **kwargs)
@@ -684,7 +685,7 @@ class SimCC:
         if isinstance(ty, SimTypeFloat) and self.FP_RETURN_VAL is not None:
             return self.FP_RETURN_VAL.refine(size=ty.size // self.arch.byte_width, arch=self.arch, is_fp=True)
 
-        if self.RETURN_VAL is None or isinstance(ty, SimTypeBottom):
+        if self.RETURN_VAL is None:
             return None
         if ty.size > self.RETURN_VAL.size * self.arch.byte_width:
             return SimComboArg([self.RETURN_VAL, self.OVERFLOW_RETURN_VAL])
@@ -1437,6 +1438,7 @@ class SimCCSystemVAMD64(SimCC):
     # https://raw.githubusercontent.com/wiki/hjl-tools/x86-psABI/x86-64-psABI-1.0.pdf
     # section 3.2.3
     def next_arg(self, session, arg_type):
+        arg_type = arg_type.with_arch(self.arch)    #Jingyu
         if isinstance(arg_type, (SimTypeArray, SimTypeFixedSizeArray)):  # hack
             arg_type = SimTypePointer(arg_type.elem_type).with_arch(self.arch)
         state = session.getstate()
@@ -1592,7 +1594,6 @@ class SimCCAMD64LinuxSyscall(SimCCSyscall):
     RETURN_VAL = SimRegArg("rax", 8)
     RETURN_ADDR = SimRegArg("ip_at_syscall", 8)
     ARCH = archinfo.ArchAMD64
-    CALLER_SAVED_REGS = ["rax", "rcx", "r11"]
 
     @staticmethod
     def _match(arch, args, sp_delta):  # pylint: disable=unused-argument
@@ -2258,7 +2259,6 @@ def default_cc(  # pylint:disable=unused-argument
     arch: str,
     platform: Optional[str] = "Linux",
     language: Optional[str] = None,
-    syscall: bool = False,
     **kwargs,
 ) -> Optional[Type[SimCC]]:
     """
@@ -2267,7 +2267,6 @@ def default_cc(  # pylint:disable=unused-argument
     :param arch:        The architecture name.
     :param platform:    The platform name (e.g., "Linux" or "Win32").
     :param language:    The programming language name (e.g., "go").
-    :param syscall:     Return syscall convention (True), or normal calling convention (False, default).
     :return:            A default calling convention class if we can find one for the architecture, platform, and
                         language combination, or None if nothing fits.
     """
@@ -2276,21 +2275,20 @@ def default_cc(  # pylint:disable=unused-argument
         platform = "Linux"
 
     default = kwargs.get("default", ...)
-    cc_map = SYSCALL_CC if syscall else DEFAULT_CC
 
-    if arch in cc_map:
-        if platform not in cc_map[arch]:
+    if arch in DEFAULT_CC:
+        if platform not in DEFAULT_CC[arch]:
             if default is not ...:
                 return default
-            if "Linux" in cc_map[arch]:
-                return cc_map[arch]["Linux"]
-        return cc_map[arch][platform]
+            if "Linux" in DEFAULT_CC[arch]:
+                return DEFAULT_CC[arch]["Linux"]
+        return DEFAULT_CC[arch][platform]
 
     alias = unify_arch_name(arch)
-    if alias not in cc_map or platform not in cc_map[alias]:
+    if alias not in DEFAULT_CC or platform not in DEFAULT_CC[alias]:
         if default is not ...:
             return default
-    return cc_map[alias][platform]
+    return DEFAULT_CC[alias][platform]
 
 
 def unify_arch_name(arch: str) -> str:

@@ -24,12 +24,11 @@ class RegionSimplifier(Analysis):
     Simplifies a given region.
     """
 
-    def __init__(self, func, region, variable_kb=None, simplify_switches: bool = True, simplify_ifelse: bool = True):
+    def __init__(self, func, region, variable_kb=None, simplify_switches: bool = True):
         self.func = func
         self.region = region
         self.variable_kb = variable_kb
         self._simplify_switches = simplify_switches
-        self._should_simplify_ifelses = simplify_ifelse
 
         self.goto_manager: Optional[GotoManager] = None
         self.result = None
@@ -71,8 +70,7 @@ class RegionSimplifier(Analysis):
         # Remove empty nodes
         r = self._remove_empty_nodes(r)
         # Remove unnecessary else branches if the if branch will always return
-        if self._should_simplify_ifelses:
-            r = self._simplify_ifelses(r)
+        r = self._simplify_ifelses(r)
         #
         r = self._simplify_cascading_ifs(r)
         #

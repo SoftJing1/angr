@@ -74,7 +74,7 @@ class DefinitionAnnotation(Annotation):
                 and self.eliminatable == other.eliminatable
             )
         else:
-            return False
+            raise ValueError("DefinitionAnnotation can only check equality with other DefinitionAnnotation")
 
     def __repr__(self):
         return f"<{self.__class__.__name__}({repr(self.definition)})"
@@ -371,14 +371,6 @@ class LiveDefinitions:
                 yield anno.definition
 
     @staticmethod
-    def extract_defs_from_annotations(annos: Iterable["Annotation"]) -> Set[Definition]:
-        defs = set()
-        for anno in annos:
-            if isinstance(anno, DefinitionAnnotation):
-                defs.add(anno.definition)
-        return defs
-
-    @staticmethod
     def extract_defs_from_mv(mv: MultiValues) -> Generator[Definition, None, None]:
         for vs in mv.values():
             for v in vs:
@@ -622,60 +614,64 @@ class LiveDefinitions:
 
     def get_definitions(
         self, thing: Union[Atom, Definition[Atom], Iterable[Atom], Iterable[Definition[Atom]], MultiValues]
-    ) -> Set[Definition[Atom]]:
+    ) -> Iterable[Definition[Atom]]:
         if isinstance(thing, MultiValues):
-            defs = set()
             for vs in thing.values():
                 for v in vs:
-                    defs.update(LiveDefinitions.extract_defs_from_annotations(v.annotations))
-            return defs
+                    for anno in v.annotations:
+                        if isinstance(anno, DefinitionAnnotation):
+                            yield anno.definition
+            return
         elif isinstance(thing, Atom):
             pass
         elif isinstance(thing, Definition):
             thing = thing.atom
         else:
-            defs = set()
             for atom2 in thing:
-                defs |= self.get_definitions(atom2)
-            return defs
+                yield from self.get_definitions(atom2)
+            return
 
         if isinstance(thing, Register):
-            return self.get_register_definitions(thing.reg_offset, thing.size)
+            yield from self.get_register_definitions(thing.reg_offset, thing.size)
         elif isinstance(thing, MemoryLocation):
             if isinstance(thing.addr, SpOffset):
-                return self.get_stack_definitions(thing.addr.offset, thing.size)
+                yield from self.get_stack_definitions(thing.addr.offset, thing.size, thing.endness)
             elif isinstance(thing.addr, HeapAddress):
-                return self.get_heap_definitions(thing.addr.value, size=thing.size)
+                yield from self.get_heap_definitions(thing.addr.value, size=thing.size, endness=thing.endness)
             elif isinstance(thing.addr, int):
-                return self.get_memory_definitions(thing.addr, thing.size)
+                yield from self.get_memory_definitions(thing.addr, thing.size, thing.endness)
             else:
-                return set()
+                return
         elif isinstance(thing, Tmp):
-            return self.get_tmp_definitions(thing.tmp_idx)
+            yield from self.get_tmp_definitions(thing.tmp_idx)
         else:
-            defs = set()
             for mvs in self.others.get(thing, {}).values():
                 for mv in mvs:
-                    defs |= self.get_definitions(mv)
-            return defs
+                    yield from self.get_definitions(mv)
 
-    def get_tmp_definitions(self, tmp_idx: int) -> Set[Definition]:
+    def get_tmp_definitions(self, tmp_idx: int) -> Iterable[Definition]:
         if tmp_idx in self.tmps:
-            return self.tmps[tmp_idx]
+            yield from self.tmps[tmp_idx]
         else:
-            return set()
+            return
 
-    def get_register_definitions(self, reg_offset: int, size: int) -> Set[Definition]:
+    def get_register_definitions(self, reg_offset: int, size: int, endness=None) -> Iterable[Definition]:
         try:
-            annotations = self.registers.load_annotations(reg_offset, size)
+            values: MultiValues = self.registers.load(
+                reg_offset,
+                size=size,
+                endness=endness,
+            )
         except SimMemoryMissingError as ex:
+            # load values and stop at the missing location
             if ex.missing_addr > reg_offset:
-                annotations = self.registers.load_annotations(reg_offset, ex.missing_addr - reg_offset)
+                values: MultiValues = self.registers.load(
+                    reg_offset, size=ex.missing_addr - reg_offset, endness=endness
+                )
             else:
                 # nothing we can do
-                return set()
-
-        return LiveDefinitions.extract_defs_from_annotations(annotations)
+                return
+        yield from LiveDefinitions.extract_defs_from_mv(values)
 
     def get_stack_values(self, stack_offset: int, size: int, endness: str) -> Optional[MultiValues]:
         stack_addr = self.stack_offset_to_stack_addr(stack_offset)
@@ -684,36 +680,31 @@ class LiveDefinitions:
         except SimMemoryMissingError:
             return None
 
-    def get_stack_definitions(self, stack_offset: int, size: int) -> Set[Definition]:
+    def get_stack_definitions(self, stack_offset: int, size: int, endness) -> Iterable[Definition]:
+        mv = self.get_stack_values(stack_offset, size, endness)
+        if not mv:
+            return
+        yield from LiveDefinitions.extract_defs_from_mv(mv)
+
+    def get_heap_definitions(self, heap_addr: int, size: int, endness) -> Iterable[Definition]:
         try:
-            stack_addr = self.stack_offset_to_stack_addr(stack_offset)
-            annotations = self.stack.load_annotations(stack_addr, size)
+            mv: MultiValues = self.heap.load(heap_addr, size=size, endness=endness)
         except SimMemoryMissingError:
-            return set()
+            return
+        yield from LiveDefinitions.extract_defs_from_mv(mv)
 
-        return LiveDefinitions.extract_defs_from_annotations(annotations)
-
-    def get_heap_definitions(self, heap_addr: int, size: int) -> Set[Definition]:
+    def get_memory_definitions(self, addr: int, size: int, endness) -> Iterable[Definition]:
         try:
-            annotations = self.heap.load_annotations(heap_addr, size)
+            values = self.memory.load(addr, size=size, endness=endness)
         except SimMemoryMissingError:
-            return set()
-
-        return LiveDefinitions.extract_defs_from_annotations(annotations)
-
-    def get_memory_definitions(self, addr: int, size: int) -> Set[Definition]:
-        try:
-            annotations = self.memory.load_annotations(addr, size)
-        except SimMemoryMissingError:
-            return set()
-
-        return LiveDefinitions.extract_defs_from_annotations(annotations)
+            return
+        yield from LiveDefinitions.extract_defs_from_mv(values)
 
     @deprecated("get_definitions")
     def get_definitions_from_atoms(self, atoms: Iterable[Atom]) -> Iterable[Definition]:
         result = set()
         for atom in atoms:
-            result |= self.get_definitions(atom)
+            result |= set(self.get_definitions(atom))
         return result
 
     @deprecated("get_values")
@@ -834,14 +825,12 @@ class LiveDefinitions:
             return self.others.get(atom, None)
 
     def get_one_value(
-        self,
-        spec: Union[Atom, Definition, Iterable[Atom], Iterable[Definition[Atom]]],
-        strip_annotations: bool = False,
+        self, spec: Union[Atom, Definition, Iterable[Atom], Iterable[Definition[Atom]]]
     ) -> Optional[claripy.ast.bv.BV]:
         r = self.get_values(spec)
         if r is None:
             return None
-        return r.one_value(strip_annotations=strip_annotations)
+        return r.one_value()
 
     @overload
     def get_concrete_value(
@@ -862,7 +851,7 @@ class LiveDefinitions:
         spec: Union[Atom, Definition[Atom], Iterable[Atom], Iterable[Definition[Atom]]],
         cast_to: Union[Type[int], Type[bytes]] = int,
     ) -> Union[int, bytes, None]:
-        r = self.get_one_value(spec, strip_annotations=True)
+        r = self.get_one_value(spec)
         if r is None:
             return None
         if r.symbolic:
@@ -914,7 +903,7 @@ class LiveDefinitions:
 
     def add_memory_use(self, atom: MemoryLocation, code_loc: CodeLocation, expr: Optional[Any] = None) -> None:
         # get all current definitions
-        current_defs: Set[Definition] = self.get_definitions(atom)
+        current_defs: Iterable[Definition] = self.get_definitions(atom)
 
         for current_def in current_defs:
             self.add_memory_use_by_def(current_def, code_loc, expr=expr)

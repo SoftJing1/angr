@@ -1,6 +1,8 @@
 # pylint:disable=missing-class-docstring
-from typing import Dict, Any, Optional, Set, TYPE_CHECKING
+from typing import Dict, Any, Optional, TYPE_CHECKING
 from itertools import count
+
+from ...utils.cowdict import ChainMapCOW
 
 if TYPE_CHECKING:
     from angr.sim_variable import SimVariable
@@ -338,20 +340,25 @@ class DerivedTypeVariable(TypeVariable):
 
 
 class TypeVariables:
-    __slots__ = (
-        "_typevars",
-        "_last_typevars",
-    )
+    __slots__ = ("_typevars",)
 
     def __init__(self):
-        self._typevars: Dict["SimVariable", Set[TypeVariable]] = {}
-        self._last_typevars: Dict[SimVariable, TypeVariable] = {}
+        self._typevars: Dict["SimVariable", TypeVariable] = ChainMapCOW(collapse_threshold=25)
+
+    def merge(self, tvs):
+        merged = TypeVariables()
+
+        # TODO: Replace this with a real lattice-based merging
+        merged._typevars = self._typevars.copy()
+        if tvs._typevars:
+            merged._typevars = merged._typevars.clean()
+            merged._typevars.update(tvs._typevars)
+
+        return merged
 
     def copy(self):
         copied = TypeVariables()
-        for var, typevars in self._typevars.items():
-            copied._typevars[var] = typevars.copy()
-        copied._last_typevars = self._last_typevars.copy()
+        copied._typevars = self._typevars.copy()
         return copied
 
     def __repr__(self):
@@ -362,24 +369,27 @@ class TypeVariables:
         return "{TypeVars: %d items}" % len(self._typevars)
 
     def add_type_variable(self, var: "SimVariable", codeloc, typevar: TypeVariable):  # pylint:disable=unused-argument
-        if var not in self._typevars:
-            self._typevars[var] = set()
-        elif typevar in self._typevars[var]:
-            return
-        self._typevars[var].add(typevar)
-        self._last_typevars[var] = typevar
+        # if var not in self._typevars:
+        #    self._typevars[var] = { }
+
+        # assert codeloc not in self._typevars[var]
+        # self._typevars[var][codeloc] = typevar
+        self._typevars = self._typevars.clean()
+        self._typevars[var] = typevar
 
     def get_type_variable(self, var, codeloc):  # pylint:disable=unused-argument
-        return self._last_typevars[var]
+        return self._typevars[var]  # [codeloc]
 
     def has_type_variable_for(self, var: "SimVariable", codeloc):  # pylint:disable=unused-argument
-        return var in self._typevars
+        if var not in self._typevars:
+            return False
+        return True
         # if codeloc not in self._typevars[var]:
         #     return False
         # return True
 
     def __getitem__(self, var):
-        return self._last_typevars[var]
+        return self._typevars[var]
 
     def __contains__(self, var):
         return var in self._typevars

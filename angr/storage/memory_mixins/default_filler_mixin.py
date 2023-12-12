@@ -7,6 +7,8 @@ from ...errors import SimMemoryMissingError
 
 l = logging.getLogger(__name__)
 
+uncon_vars = []
+
 
 class DefaultFillerMixin(MemoryMixin):
     def _default_value(
@@ -105,7 +107,9 @@ class DefaultFillerMixin(MemoryMixin):
                 name = self.category
 
         r = self.state.solver.Unconstrained(name, bits, key=key, inspect=inspect, events=events)
-
+        
+        uncon_vars.append(r)
+        
         return r
 
 

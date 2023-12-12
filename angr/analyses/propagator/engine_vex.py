@@ -5,9 +5,8 @@ import claripy
 import pyvex
 import archinfo
 
-from angr.knowledge_plugins.propagations.states import RegisterAnnotation, RegisterComparisonAnnotation
 from ...engines.light import SimEngineLightVEXMixin
-from ...calling_conventions import DEFAULT_CC, SYSCALL_CC, default_cc, SimRegArg
+from ...calling_conventions import DEFAULT_CC, default_cc, SimRegArg
 from .values import Top, Bottom
 from .engine_base import SimEnginePropagatorBase
 from .top_checker_mixin import TopCheckerMixin
@@ -31,18 +30,18 @@ class SimEnginePropagatorVEX(
     # Private methods
     #
 
-    def _process_block_end(self):
-        super()._process_block_end()
+    def _process(self, state, successors, block=None, whitelist=None, **kwargs):  # pylint:disable=arguments-differ
+        super()._process(state, successors, block=block, whitelist=whitelist, **kwargs)
+
         if self.block.vex.jumpkind == "Ijk_Call":
             if self.arch.call_pushes_ret:
                 # pop ret from the stack
                 sp_offset = self.arch.sp_offset
-                sp_value = self.state.load_register(sp_offset, self.arch.bytes)
+                sp_value = state.load_register(sp_offset, self.arch.bytes)
                 if sp_value is not None:
-                    self.state.store_register(sp_offset, self.arch.bytes, sp_value + self.arch.bytes)
+                    state.store_register(sp_offset, self.arch.bytes, sp_value + self.arch.bytes)
 
-        if self.block.vex.jumpkind == "Ijk_Call" or self.block.vex.jumpkind.startswith("Ijk_Sys"):
-            self._handle_return_from_call()
+        return state
 
     def _allow_loading(self, addr, size):
         if type(addr) in (Top, Bottom):
@@ -110,16 +109,9 @@ class SimEnginePropagatorVEX(
                     #   ret
                     ebx_offset = self.arch.registers["ebx"][0]
                     self.state.store_register(ebx_offset, 4, claripy.BVV(self.block.addr + self.block.size, 32))
-
-    def _handle_return_from_call(self):
-        # FIXME: Handle the specific function calling convention when known
-        syscall = self.block.vex.jumpkind.startswith("Ijk_Sys")
-        cc_map = SYSCALL_CC if syscall else DEFAULT_CC
-        if self.arch.name in cc_map:
+        if self.arch.name in DEFAULT_CC:
             cc = default_cc(
-                self.arch.name,
-                platform=self.project.simos.name if self.project.simos is not None else None,
-                syscall=syscall,
+                self.arch.name, platform=self.project.simos.name if self.project.simos is not None else None
             )  # don't instantiate the class for speed
             if isinstance(cc.RETURN_VAL, SimRegArg):
                 offset, size = self.arch.registers[cc.RETURN_VAL.reg_name]
@@ -242,16 +234,6 @@ class SimEnginePropagatorVEX(
             self.tmps[stmt.result] = 1
             self.state.add_replacement(self._codeloc(block_only=True), VEXTmp(stmt.result), self.tmps[stmt.result])
 
-    def _handle_CmpEQ(self, expr):
-        arg0, arg1 = self._expr(expr.args[0]), self._expr(expr.args[1])
-        if arg1 is not None and arg1.concrete and arg0 is not None and len(arg0.annotations) == 1:
-            anno = arg0.annotations[0]
-            if isinstance(anno, RegisterAnnotation):
-                cmp_anno = RegisterComparisonAnnotation(anno.offset, anno.size, "eq", arg1.concrete_value)
-                bits = expr.result_size(self.tyenv)
-                return self.state.top(bits).annotate(cmp_anno)
-        return super()._handle_CmpEQ(expr)
-
     #
     # Expression handlers
     #
@@ -277,37 +259,3 @@ class SimEnginePropagatorVEX(
         r = super()._handle_Binop(expr)
         # print(expr.op, r)
         return r
-
-    def _handle_Conversion(self, expr):
-        expr_ = self._expr(expr.args[0])
-        to_size = expr.result_size(self.tyenv)
-        if expr_ is None:
-            return self._top(to_size)
-        if self._is_top(expr_):
-            return self._top(to_size).annotate(*expr_.annotations)
-
-        if isinstance(expr_, claripy.ast.Base) and expr_.op == "BVV":
-            if expr_.size() > to_size:
-                # truncation
-                return expr_[to_size - 1 : 0]
-            elif expr_.size() < to_size:
-                # extension
-                return claripy.ZeroExt(to_size - expr_.size(), expr_)
-            else:
-                return expr_
-
-        return self._top(to_size)
-
-    def _handle_Exit(self, stmt):
-        guard = self._expr(stmt.guard)
-        if guard is not None and len(guard.annotations) == 1:
-            dst = self._expr(stmt.dst)
-            if dst is not None and dst.concrete:
-                anno = guard.annotations[0]
-                if isinstance(anno, RegisterComparisonAnnotation):
-                    if anno.cmp_op == "eq":
-                        v = (anno.offset, anno.size, anno.value)
-                        if v not in self.state.block_initial_reg_values[self.block.addr, dst.concrete_value]:
-                            self.state.block_initial_reg_values[self.block.addr, dst.concrete_value].append(v)
-
-        super()._handle_Exit(stmt)

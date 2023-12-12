@@ -211,7 +211,7 @@ class SimSolver(SimStatePlugin):
         self.all_variables = [] if all_variables is None else all_variables
         self.temporal_tracked_variables = {} if temporal_tracked_variables is None else temporal_tracked_variables
         self.eternal_tracked_variables = {} if eternal_tracked_variables is None else eternal_tracked_variables
-
+        
     def reload_solver(self, constraints=None):
         """
         Reloads the solver. Useful when changing solver options.
@@ -336,6 +336,10 @@ class SimSolver(SimStatePlugin):
 
         return self._stored_solver
 
+    
+    
+    
+
     #
     # Get unconstrained stuff
     #
@@ -389,10 +393,12 @@ class SimSolver(SimStatePlugin):
                         events=events,
                         **kwargs,
                     )
+            
 
             return r
         else:
             # Return a default value, aka. 0
+           
             return claripy.BVV(0, bits)
 
     def BVS(

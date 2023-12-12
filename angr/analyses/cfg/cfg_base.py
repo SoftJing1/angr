@@ -1549,17 +1549,15 @@ class CFGBase(Analysis):
             function.mark_nonreturning_calls_endpoints()
             if function.returning is False:
                 # remove all FakeRet edges that are related to this function
-                func_node = self.model.get_any_node(function.addr)
-                if func_node is not None:
-                    callsite_nodes = [
-                        src
-                        for src, _, data in self.graph.in_edges(func_node, data=True)
-                        if data.get("jumpkind", None) == "Ijk_Call"
-                    ]
-                    for callsite_node in callsite_nodes:
-                        for _, dst, data in list(self.graph.out_edges(callsite_node, data=True)):
-                            if data.get("jumpkind", None) == "Ijk_FakeRet":
-                                self.graph.remove_edge(callsite_node, dst)
+                callsite_nodes = [
+                    src
+                    for src, _, data in self.graph.in_edges(self.model.get_any_node(function.addr), data=True)
+                    if data.get("jumpkind", None) == "Ijk_Call"
+                ]
+                for callsite_node in callsite_nodes:
+                    for _, dst, data in list(self.graph.out_edges(callsite_node, data=True)):
+                        if data.get("jumpkind", None) == "Ijk_FakeRet":
+                            self.graph.remove_edge(callsite_node, dst)
 
         # Clear old functions dict
         self.kb.functions.clear()
@@ -1932,7 +1930,7 @@ class CFGBase(Analysis):
 
             func_0 = functions[addr_0]
 
-            if len(func_0.block_addrs_set) >= 1:
+            if 1 <= len(func_0.block_addrs_set) <= 4:
                 if len(func_0.jumpout_sites) != 1:
                     continue
                 block_node = func_0.jumpout_sites[0]

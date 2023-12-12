@@ -5,8 +5,6 @@ import time
 import logging
 from collections import defaultdict
 
-import networkx
-
 import claripy
 
 from angr.utils.graph import GraphUtils
@@ -15,6 +13,7 @@ from ..knowledge_plugins.cfg import CFGModel
 from . import Analysis, register_analysis, VariableRecoveryFast, CallingConventionAnalysis
 
 if TYPE_CHECKING:
+    import networkx
     from angr.calling_conventions import SimCC
     from angr.sim_type import SimTypeFunction
     from angr.knowledge_plugins.variables.variable_manager import VariableManagerInternal
@@ -105,9 +104,7 @@ class CompleteCallingConventionsAnalysis(Analysis):
         """
 
         # get an ordering of functions based on the call graph
-        # note that the call graph is a multi-digraph. we convert it to a digraph to speed up topological sort
-        directed_callgraph = networkx.DiGraph(self.kb.functions.callgraph)
-        sorted_funcs = GraphUtils.quasi_topological_sort_nodes(directed_callgraph)
+        sorted_funcs = GraphUtils.quasi_topological_sort_nodes(self.kb.functions.callgraph)
 
         total_funcs = 0
         for func_addr in reversed(sorted_funcs):

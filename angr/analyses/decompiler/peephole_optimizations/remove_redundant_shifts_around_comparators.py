@@ -15,7 +15,7 @@ class RemoveRedundantShiftsAroundComparators(PeepholeOptimizationExprBase):
     NAME = "Remove redundant bitshifts for operands around a comparator"
     expr_classes = (BinaryOp,)  # all expressions are allowed
 
-    def optimize(self, expr: BinaryOp, **kwargs):
+    def optimize(self, expr: BinaryOp):
         # (expr_0 << N) < (expr_1 << N)  ==> expr_0 << expr_1
         # FIXME: This optimization is unsafe but seems to work for all existing case
         if expr.op in {"CmpLE", "CmpLT", "CmpEQ", "CmpNE", "CmpGE", "CmpGT"}:

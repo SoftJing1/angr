@@ -46,12 +46,6 @@ class SimEngineVRAIL(
             data = self._expr(stmt.src)
             size = stmt.src.bits // 8
 
-            if hasattr(stmt.dst, "write_size") and stmt.dst.write_size > size:
-                # zero-fill this register
-                self._assign_to_register(
-                    offset, RichR(self.state.top(stmt.dst.write_size * 8)), stmt.dst.write_size, create_variable=False
-                )
-
             self._assign_to_register(offset, data, size, src=stmt.src, dst=stmt.dst)
 
         elif dst_type is ailment.Expr.Tmp:
@@ -124,7 +118,7 @@ class SimEngineVRAIL(
             prototype = stmt.prototype
         elif isinstance(stmt.target, ailment.Expr.Const):
             func_addr = stmt.target.value
-            if isinstance(func_addr, self.kb.functions.address_types) and func_addr in self.kb.functions:
+            if func_addr in self.kb.functions:
                 func = self.kb.functions[func_addr]
                 prototype = func.prototype
 
@@ -610,26 +604,6 @@ class SimEngineVRAIL(
         r = self.state.top(expr.bits)
         return RichR(r, typevar=r0.typevar)
 
-    def _ail_handle_Rol(self, expr):
-        arg0, arg1 = expr.operands
-
-        r0 = self._expr(arg0)
-        _ = self._expr(arg1)
-        result_size = arg0.bits
-
-        r = self.state.top(result_size)
-        return RichR(r, typevar=r0.typevar)
-
-    def _ail_handle_Ror(self, expr):
-        arg0, arg1 = expr.operands
-
-        r0 = self._expr(arg0)
-        _ = self._expr(arg1)
-        result_size = arg0.bits
-
-        r = self.state.top(result_size)
-        return RichR(r, typevar=r0.typevar)
-
     def _ail_handle_Concat(self, expr):
         arg0, arg1 = expr.operands
 
@@ -664,22 +638,6 @@ class SimEngineVRAIL(
         if expr.data.concrete:
             return RichR(
                 -expr.data,
-                typevar=typeconsts.int_type(result_size),
-                type_constraints=None,
-            )
-
-        r = self.state.top(result_size)
-        return RichR(r, typevar=expr.typevar)
-
-    def _ail_handle_BitwiseNeg(self, expr):
-        arg = expr.operands[0]
-        expr = self._expr(arg)
-
-        result_size = arg.bits
-
-        if expr.data.concrete:
-            return RichR(
-                ~expr.data,
                 typevar=typeconsts.int_type(result_size),
                 type_constraints=None,
             )

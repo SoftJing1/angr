@@ -1,13 +1,9 @@
-import pathlib
-from typing import Optional, Tuple, Any, Union, List, Iterable
-import logging
+# pylint:disable=wrong-import-position
+from typing import Optional, Tuple, Any, Union, List
 
 import networkx
 
 import ailment
-import angr
-
-_l = logging.getLogger(__name__)
 
 
 def remove_last_statement(node):
@@ -456,7 +452,7 @@ def peephole_optimize_exprs(block, expr_opts):
             redo = False
             for expr_opt in expr_opts:
                 if isinstance(expr, expr_opt.expr_classes):
-                    r = expr_opt.optimize(expr, stmt_idx=stmt_idx, block=block)
+                    r = expr_opt.optimize(expr)
                     if r is not None and r is not expr:
                         expr = r
                         redo = True
@@ -515,14 +511,14 @@ def peephole_optimize_stmts(block, stmt_opts):
     statements = []
 
     # run statement optimizers
-    for stmt_idx, stmt in enumerate(block.statements):
+    for stmt in block.statements:
         old_stmt = stmt
         redo = True
         while redo:
             redo = False
             for opt in stmt_opts:
                 if isinstance(stmt, opt.stmt_classes):
-                    r = opt.optimize(stmt, stmt_idx=stmt_idx, block=block)
+                    r = opt.optimize(stmt)
                     if r is not None and r is not stmt:
                         stmt = r
                         redo = True
@@ -535,131 +531,6 @@ def peephole_optimize_stmts(block, stmt_opts):
             statements.append(old_stmt)
 
     return statements, any_update
-
-
-def match_stmt_classes(all_stmts: List, idx: int, stmt_class_seq: Iterable[type]) -> bool:
-    for i, cls in enumerate(stmt_class_seq):
-        if idx + i >= len(all_stmts):
-            return False
-        if not isinstance(all_stmts[idx + i], cls):
-            return False
-    return True
-
-
-def peephole_optimize_multistmts(block, stmt_opts):
-    any_update = False
-    statements = block.statements[::]
-
-    # run multi-statement optimizers
-    stmt_idx = 0
-    while stmt_idx < len(statements):
-        redo = True
-        while redo and stmt_idx < len(statements):
-            redo = False
-            for opt in stmt_opts:
-                matched = False
-                stmt_seq_len = None
-                for stmt_class_seq in opt.stmt_classes:
-                    if match_stmt_classes(statements, stmt_idx, stmt_class_seq):
-                        stmt_seq_len = len(stmt_class_seq)
-                        matched = True
-                        break
-
-                if matched:
-                    matched_stmts = statements[stmt_idx : stmt_idx + stmt_seq_len]
-                    r = opt.optimize(matched_stmts, stmt_idx=stmt_idx, block=block)
-                    if r is not None:
-                        # update statements
-                        statements = statements[:stmt_idx] + r + statements[stmt_idx + stmt_seq_len :]
-                        any_update = True
-                        redo = True
-                        break
-
-        # move on to the next statement
-        stmt_idx += 1
-
-    return statements, any_update
-
-
-def decompile_functions(path, functions=None, structurer=None, catch_errors=False) -> Optional[str]:
-    """
-    Decompile a binary into a set of functions.
-
-    :param path:            The path to the binary to decompile.
-    :param functions:       The functions to decompile. If None, all functions will be decompiled.
-    :param structurer:      The structuring algorithms to use.
-    :param catch_errors:    The structuring algorithms to use.
-    :return:                The decompilation of all functions appended in order.
-    """
-    # delayed imports to avoid circular imports
-    from angr.analyses.decompiler.decompilation_options import PARAM_TO_OPTION
-
-    structurer = structurer or "phoenix"
-    path = pathlib.Path(path).resolve().absolute()
-    proj = angr.Project(path, auto_load_libs=False)
-    cfg = proj.analyses.CFG(normalize=True, data_references=True)
-    proj.analyses.CompleteCallingConventions(recover_variables=True, analyze_callsites=True)
-
-    # collect all functions when None are provided
-    if functions is None:
-        functions = cfg.functions.values()
-
-    # normalize the functions that could be ints as names
-    normalized_functions = []
-    for func in functions:
-        try:
-            normalized_name = int(func, 0)
-        except ValueError:
-            normalized_name = func
-        normalized_functions.append(normalized_name)
-    functions = normalized_functions
-
-    # verify that all functions exist
-    for func in list(functions):
-        if func not in cfg.functions:
-            if catch_errors:
-                _l.warning("Function %s does not exist in the CFG.", str(func))
-                functions.remove(func)
-            else:
-                raise ValueError(f"Function {func} does not exist in the CFG.")
-
-    # decompile all functions
-    decompilation = ""
-    dec_options = [
-        (PARAM_TO_OPTION["structurer_cls"], structurer),
-    ]
-    for func in functions:
-        f = cfg.functions[func]
-        if f is None or f.is_plt:
-            continue
-
-        exception_string = ""
-        if not catch_errors:
-            dec = proj.analyses.Decompiler(f, cfg=cfg, options=dec_options)
-        else:
-            try:
-                # TODO: add a timeout
-                dec = proj.analyses.Decompiler(f, cfg=cfg, options=dec_options)
-            except Exception as e:
-                exception_string = str(e).replace("\n", " ")
-                dec = None
-
-        # do sanity checks on decompilation, skip checks if we already errored
-        if not exception_string:
-            if dec is None or not dec.codegen or not dec.codegen.text:
-                exception_string = "Decompilation had no code output (failed in Dec)"
-            elif "{\n}" in dec.codegen.text:
-                exception_string = "Decompilation outputted an empty function (failed in structuring)"
-            elif structurer in ["dream", "combing"] and "goto" in dec.codegen.text:
-                exception_string = "Decompilation outputted a goto for a Gotoless algorithm (failed in structuring)"
-
-        if exception_string:
-            _l.critical("Failed to decompile %s because %s", str(func), exception_string)
-            decompilation += f"// [error: {func} | {exception_string}]\n"
-        else:
-            decompilation += dec.codegen.text + "\n"
-
-    return decompilation
 
 
 # delayed import

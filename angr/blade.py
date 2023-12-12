@@ -1,4 +1,3 @@
-# pylint:disable=unnecessary-dunder-call
 import itertools
 
 import networkx
@@ -9,12 +8,6 @@ from .errors import AngrBladeError, SimTranslationError
 from .knowledge_plugins.cfg import CFGNode
 from .utils.constants import DEFAULT_STATEMENT
 from .slicer import SimSlicer
-
-
-class BadJumpkindNotification(Exception):
-    """
-    Notifies the caller that the jumpkind is bad (e.g., Ijk_NoDecode)
-    """
 
 
 class Blade:
@@ -184,8 +177,6 @@ class Blade:
                 irsb = self.project.factory.block(
                     v, cross_insn_opt=self._cross_insn_opt, backup_state=self._base_state
                 ).vex
-                if irsb.jumpkind == "Ijk_NoDecode":
-                    raise BadJumpkindNotification()
                 self._run_cache[v] = irsb
                 return irsb
             else:
@@ -257,7 +248,7 @@ class Blade:
         # Retrieve the target: are we slicing from a register(IRStmt.Put), or a temp(IRStmt.WrTmp)?
         try:
             stmts = self._get_irsb(self._dst_run).statements
-        except (SimTranslationError, BadJumpkindNotification):
+        except SimTranslationError:
             return
 
         if self._dst_stmt_idx != -1:
@@ -346,10 +337,7 @@ class Blade:
         regs = regs.copy()
 
         irsb_addr = self._get_addr(run)
-        try:
-            stmts = self._get_irsb(run).statements
-        except (SimTranslationError, BadJumpkindNotification):
-            return
+        stmts = self._get_irsb(run).statements
 
         if exit_stmt_idx is None or exit_stmt_idx == DEFAULT_STATEMENT:
             # Initialize the temps set with whatever in the `next` attribute of this irsb

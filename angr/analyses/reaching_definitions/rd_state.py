@@ -328,7 +328,7 @@ class ReachingDefinitionsState:
         Overwrite existing definitions w.r.t 'atom' with a dummy definition instance. A dummy definition will not be
         removed during simplification.
         """
-        existing_defs = self.live_definitions.get_definitions(atom)
+        existing_defs = set(self.live_definitions.get_definitions(atom))
 
         self.live_definitions.kill_definitions(atom)
 
@@ -347,7 +347,7 @@ class ReachingDefinitionsState:
         override_codeloc: Optional[CodeLocation] = None,
     ) -> Tuple[Optional[MultiValues], Set[Definition]]:
         codeloc = override_codeloc or self.codeloc
-        existing_defs = self.live_definitions.get_definitions(atom)
+        existing_defs = set(self.live_definitions.get_definitions(atom))
         mv = self.live_definitions.kill_and_add_definition(
             atom, codeloc, data, dummy=dummy, tags=tags, endness=endness, annotated=annotated
         )
@@ -417,7 +417,7 @@ class ReachingDefinitionsState:
         for def_ in existing_defs:
             self.analysis.model.kill_def(def_)
         for def_ in defs:
-            self.analysis.model.add_def(def_)
+            self.analysis.model.add_def(def_, codeloc)
 
         return mv, defs
 
@@ -450,8 +450,8 @@ class ReachingDefinitionsState:
             self.codeloc_uses.add(definition)
             self.live_definitions.add_register_use_by_def(definition, self.codeloc, expr=expr)
 
-    def add_stack_use(self, stack_offset: int, size: int, expr: Optional[Any] = None) -> None:
-        defs = self.live_definitions.get_stack_definitions(stack_offset, size)
+    def add_stack_use(self, stack_offset: int, size: int, endness, expr: Optional[Any] = None) -> None:
+        defs = self.live_definitions.get_stack_definitions(stack_offset, size, endness)
         self.add_stack_use_by_defs(defs, expr=expr)
 
     def add_stack_use_by_defs(self, defs: Iterable[Definition], expr: Optional[Any] = None):
@@ -459,8 +459,8 @@ class ReachingDefinitionsState:
             self.codeloc_uses.add(definition)
             self.live_definitions.add_stack_use_by_def(definition, self.codeloc, expr=expr)
 
-    def add_heap_use(self, heap_offset: int, size: int, expr: Optional[Any] = None) -> None:
-        defs = self.live_definitions.get_heap_definitions(heap_offset, size)
+    def add_heap_use(self, heap_offset: int, size: int, endness, expr: Optional[Any] = None) -> None:
+        defs = self.live_definitions.get_heap_definitions(heap_offset, size, endness)
         self.add_heap_use_by_defs(defs, expr=expr)
 
     def add_heap_use_by_defs(self, defs: Iterable[Definition], expr: Optional[Any] = None):
@@ -477,16 +477,16 @@ class ReachingDefinitionsState:
             self.codeloc_uses.add(definition)
             self.live_definitions.add_memory_use_by_def(definition, self.codeloc, expr=expr)
 
-    def get_definitions(self, atom: Union[Atom, Definition, Iterable[Atom], Iterable[Definition]]) -> Set[Definition]:
-        return self.live_definitions.get_definitions(atom)
+    def get_definitions(
+        self, atom: Union[Atom, Definition, Iterable[Atom], Iterable[Definition]]
+    ) -> Iterable[Definition]:
+        yield from self.live_definitions.get_definitions(atom)
 
     def get_values(self, spec: Union[Atom, Definition, Iterable[Atom]]) -> Optional[MultiValues]:
         return self.live_definitions.get_values(spec)
 
-    def get_one_value(
-        self, spec: Union[Atom, Definition], strip_annotations: bool = False
-    ) -> Optional[claripy.ast.bv.BV]:
-        return self.live_definitions.get_one_value(spec, strip_annotations=strip_annotations)
+    def get_one_value(self, spec: Union[Atom, Definition]) -> Optional[claripy.ast.bv.BV]:
+        return self.live_definitions.get_one_value(spec)
 
     @overload
     def get_concrete_value(
@@ -566,19 +566,19 @@ class ReachingDefinitionsState:
     @overload
     def deref(
         self,
-        pointer: Union[int, claripy.ast.bv.BV, HeapAddress, SpOffset],
+        pointer: Union[MultiValues, Atom, Definition, Iterable[Atom], Iterable[Definition]],
         size: Union[int, DerefSize],
         endness: str = ...,
-    ) -> Optional[MemoryLocation]:
+    ) -> Set[MemoryLocation]:
         ...
 
     @overload
     def deref(
         self,
-        pointer: Union[MultiValues, Atom, Definition, Iterable[Atom], Iterable[Definition]],
+        pointer: Union[int, claripy.ast.BV, HeapAddress, SpOffset],
         size: Union[int, DerefSize],
         endness: str = ...,
-    ) -> Set[MemoryLocation]:
+    ) -> Optional[MemoryLocation]:
         ...
 
     def deref(

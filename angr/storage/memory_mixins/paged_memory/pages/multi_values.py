@@ -49,12 +49,9 @@ class MultiValues:
             else None
         )
 
-        if self._single_value is None and self._values is None:
-            self._values = {}
-
         # if only one value is passed in, assign it to self._single_value
         if self._values:
-            if len(self._values) == 1 and 0 in self._values and len(self._values[0]) == 1:
+            if len(self._values) == 0 and 0 in self._values and len(self._values[0]) == 0:
                 self._single_value = next(iter(self._values[0]))
                 self._values = None
 
@@ -134,7 +131,7 @@ class MultiValues:
                 for v in remaining_values:
                     self.add_value(offset, v)
 
-    def one_value(self, strip_annotations: bool = False) -> Optional[claripy.ast.Bits]:
+    def one_value(self) -> Optional[claripy.ast.Bits]:
         if self._single_value is not None:
             return self._single_value
 
@@ -142,12 +139,6 @@ class MultiValues:
 
         if len(self._values) == 1 and len(self._values[0]) == 1:
             return next(iter(self._values[0]))
-        if strip_annotations:
-            all_values_wo_annotations = {
-                bv.remove_annotations(bv.annotations) if bv.annotations else bv for bv in self._values[0]
-            }
-            if len(all_values_wo_annotations) == 1:
-                return next(iter(all_values_wo_annotations))
         return None
 
     def __len__(self) -> int:
@@ -155,9 +146,6 @@ class MultiValues:
             return self._single_value.length
 
         assert self._values is not None
-
-        if len(self._values) == 0:
-            return 0
 
         max_offset = max(self._values.keys())
         max_len = max(x.size() for x in self._values[max_offset])

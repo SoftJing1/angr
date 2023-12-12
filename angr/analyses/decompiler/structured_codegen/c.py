@@ -12,7 +12,6 @@ from ....sim_type import (
     SimTypeInt,
     SimTypeShort,
     SimTypeChar,
-    SimTypeWideChar,
     SimTypePointer,
     SimStruct,
     SimType,
@@ -274,6 +273,9 @@ class CConstruct:
 
             last_insn_addr = None
 
+            # track all Function Calls for highlighting
+            used_func_calls = set()
+
             # track all variables so we can tell if this is a declaration or not
             used_vars = set()
 
@@ -308,11 +310,15 @@ class CConstruct:
                             CBinaryOp,
                             CUnaryOp,
                             CAssignment,
-                            CFunctionCall,
                         ),
                     ):
                         if pos_to_node is not None:
                             pos_to_node.add_mapping(pos, len(s), obj)
+                    elif isinstance(obj, CFunctionCall):
+                        if obj not in used_func_calls:
+                            used_func_calls.add(obj)
+                            if pos_to_node is not None:
+                                pos_to_node.add_mapping(pos, len(s), obj)
 
                 # add (), {}, [], and [20] to mapping for highlighting as well as the full functions name
                 elif isinstance(obj, (CClosingObject, CFunction, CArrayTypeLength, CStructFieldNameDef)):
@@ -1241,15 +1247,15 @@ class CFunctionCall(CStatement, CExpression):
 
         for i, arg in enumerate(self.args):
             if i:
-                yield ", ", None
+                yield ", ", self
             yield from CExpression._try_c_repr_chunks(arg)
 
         yield ")", paren
 
         if not self.is_expr and not asexpr:
-            yield ";", None
+            yield ";", self
             if not self.returning:
-                yield " /* do not return */", None
+                yield " /* do not return */", self
             yield "\n", None
 
 
@@ -1747,8 +1753,6 @@ class CBinaryOp(CExpression):
             "CmpEQ": self._c_repr_chunks_cmpeq,
             "CmpNE": self._c_repr_chunks_cmpne,
             "Concat": self._c_repr_chunks_concat,
-            "Rol": self._c_repr_chunks_rol,
-            "Ror": self._c_repr_chunks_ror,
         }
 
         handler = OP_MAP.get(self.op, None)
@@ -1861,24 +1865,6 @@ class CBinaryOp(CExpression):
 
     def _c_repr_chunks_concat(self):
         yield from self._c_repr_chunks(" CONCAT ")
-
-    def _c_repr_chunks_rol(self):
-        yield "__ROL__", self
-        paren = CClosingObject("(")
-        yield "(", paren
-        yield from self._try_c_repr_chunks(self.lhs)
-        yield ", ", None
-        yield from self._try_c_repr_chunks(self.rhs)
-        yield ")", paren
-
-    def _c_repr_chunks_ror(self):
-        yield "__ROR__", self
-        paren = CClosingObject("(")
-        yield "(", paren
-        yield from self._try_c_repr_chunks(self.lhs)
-        yield ", ", None
-        yield from self._try_c_repr_chunks(self.rhs)
-        yield ")", paren
 
 
 class CTypeCast(CExpression):
@@ -2006,14 +1992,14 @@ class CConstant(CExpression):
         return self._type
 
     @staticmethod
-    def str_to_c_str(_str, prefix: str = ""):
+    def str_to_c_str(_str):
         repr_str = repr(_str)
         base_str = repr_str[1:-1]
         if repr_str[0] == "'":
             # check if there's double quotes in the body
             if '"' in base_str:
                 base_str = base_str.replace('"', '\\"')
-        return f'{prefix}"{base_str}"'
+        return f'"{base_str}"'
 
     def c_repr_chunks(self, indent=0, asexpr=False):
         if self.collapsed:
@@ -2032,31 +2018,11 @@ class CConstant(CExpression):
 
         if self.reference_values is not None and self._type is not None and self._type in self.reference_values:
             if isinstance(self._type, SimTypeInt):
-                if isinstance(self.reference_values[self._type], int):
-                    yield self.fmt_int(self.reference_values[self._type]), self
-                    return
                 yield hex(self.reference_values[self._type]), self
             elif isinstance(self._type, SimTypePointer) and isinstance(self._type.pts_to, SimTypeChar):
-                refval = self.reference_values[self._type]
-                if isinstance(refval, MemoryData):
-                    v = refval.content.decode("utf-8")
-                else:
-                    # it's a string
-                    assert isinstance(v, str)
-                    v = refval
-                yield CConstant.str_to_c_str(v), self
-            elif isinstance(self._type, SimTypePointer) and isinstance(self._type.pts_to, SimTypeWideChar):
-                refval = self.reference_values[self._type]
-                if isinstance(refval, MemoryData):
-                    v = refval.content.decode("utf_16_le")
-                else:
-                    # it's a string
-                    v = refval
-                yield CConstant.str_to_c_str(v, prefix="L"), self
+                refval = self.reference_values[self._type]  # angr.knowledge_plugin.cfg.MemoryData
+                yield CConstant.str_to_c_str(refval.content.decode("utf-8")), self
             else:
-                if isinstance(self.reference_values[self._type], int):
-                    yield self.fmt_int(self.reference_values[self._type]), self
-                    return
                 yield self.reference_values[self.type], self
 
         elif isinstance(self.value, int) and self.value == 0 and isinstance(self.type, SimTypePointer):
@@ -2072,39 +2038,29 @@ class CConstant(CExpression):
             yield "true" if self.value else "false", self
 
         elif isinstance(self.value, int):
-            str_value = self.fmt_int(self.value)
+            value = self.value
+            if self.fmt_neg:
+                if value > 0:
+                    value = value - 2**self._type.size
+                elif value < 0:
+                    value = value + 2**self._type.size
+
+            str_value = None
+            if self.fmt_char:
+                try:
+                    str_value = f"'{chr(value)}'"
+                except ValueError:
+                    str_value = None
+
+            if str_value is None:
+                if self.fmt_hex:
+                    str_value = hex(value)
+                else:
+                    str_value = str(value)
+
             yield str_value, self
         else:
             yield str(self.value), self
-
-    def fmt_int(self, value: int) -> str:
-        """
-        Format an integer using the format setup of the current node.
-
-        :param value:   The integer value to format.
-        :return:        The formatted string.
-        """
-
-        if self.fmt_neg:
-            if value > 0:
-                value = value - 2**self._type.size
-            elif value < 0:
-                value = value + 2**self._type.size
-
-        str_value = None
-        if self.fmt_char:
-            try:
-                str_value = f"'{chr(value)}'"
-            except ValueError:
-                str_value = None
-
-        if str_value is None:
-            if self.fmt_hex:
-                str_value = hex(value)
-            else:
-                str_value = str(value)
-
-        return str_value
 
 
 class CRegister(CExpression):
@@ -2732,9 +2688,6 @@ class CStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
         o_constant, o_terms = extract_terms(expr)
 
         def bail_out():
-            if len(o_terms) == 0:
-                # probably a plain integer, return as is
-                return expr
             result = reduce(
                 lambda a1, a2: CBinaryOp("Add", a1, a2, codegen=self),
                 (
@@ -3210,11 +3163,6 @@ class CStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
         inline_string = False
         function_pointer = False
 
-        if reference_values is None and hasattr(expr, "reference_values"):
-            reference_values = expr.reference_values.copy()
-            if reference_values:
-                type_ = next(iter(reference_values))
-
         if reference_values is None:
             reference_values = {}
             type_ = unpack_typeref(type_)
@@ -3250,26 +3198,15 @@ class CStructuredCodeGenerator(BaseStructuredCodeGenerator, Analysis):
                     and expr.bits == self.project.arch.bits
                     and expr.value > 0x10000
                     and expr.value in self._cfg.memory_data
+                    and self._cfg.memory_data[expr.value].sort == MemoryDataSort.String
                 ):
-                    md = self._cfg.memory_data[expr.value]
-                    if md.sort == MemoryDataSort.String:
-                        type_ = SimTypePointer(SimTypeChar().with_arch(self.project.arch)).with_arch(self.project.arch)
-                        reference_values[type_] = self._cfg.memory_data[expr.value]
-                        # is it a constant string?
-                        if is_in_readonly_segment(self.project, expr.value) or is_in_readonly_section(
-                            self.project, expr.value
-                        ):
-                            inline_string = True
-                    elif md.sort == MemoryDataSort.UnicodeString:
-                        type_ = SimTypePointer(SimTypeWideChar().with_arch(self.project.arch)).with_arch(
-                            self.project.arch
-                        )
-                        reference_values[type_] = self._cfg.memory_data[expr.value]
-                        # is it a constant string?
-                        if is_in_readonly_segment(self.project, expr.value) or is_in_readonly_section(
-                            self.project, expr.value
-                        ):
-                            inline_string = True
+                    type_ = SimTypePointer(SimTypeChar()).with_arch(self.project.arch)
+                    reference_values[type_] = self._cfg.memory_data[expr.value]
+                    # is it a constant string?
+                    if is_in_readonly_segment(self.project, expr.value) or is_in_readonly_section(
+                        self.project, expr.value
+                    ):
+                        inline_string = True
 
         if type_ is None:
             # default to int

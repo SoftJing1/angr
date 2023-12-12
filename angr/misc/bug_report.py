@@ -1,4 +1,4 @@
-import importlib
+import imp
 import os
 import sys
 import datetime
@@ -41,7 +41,7 @@ def print_versions():
     for m in angr_modules:
         print("######## %s #########" % m)
         try:
-            python_filename = importlib.util.find_spec(m).origin
+            _, python_filename, _ = imp.find_module(m)
         except ImportError:
             print("Python could not find " + m)
             continue

@@ -20,7 +20,6 @@ from ...sim_type import (
     SimTypeFunction,
     SimTypeBottom,
     SimTypeFloat,
-    SimTypePointer,
 )
 from ...sim_variable import SimVariable, SimStackVariable, SimRegisterVariable, SimMemoryVariable
 from ...knowledge_plugins.key_definitions.constants import OP_BEFORE
@@ -64,7 +63,6 @@ class Clinic(Analysis):
         must_struct: Optional[Set[str]] = None,
         variable_kb=None,
         reset_variable_names=False,
-        rewrite_ites_to_diamonds=True,
         cache: Optional["DecompilationCache"] = None,
     ):
         if not func.normalized:
@@ -91,7 +89,6 @@ class Clinic(Analysis):
         self.peephole_optimizations = peephole_optimizations
         self._must_struct = must_struct
         self._reset_variable_names = reset_variable_names
-        self._rewrite_ites_to_diamonds = rewrite_ites_to_diamonds
         self.reaching_definitions: Optional[ReachingDefinitionsAnalysis] = None
         self._cache = cache
 
@@ -179,8 +176,7 @@ class Clinic(Analysis):
         self._convert_all()
 
         ail_graph = self._make_ailgraph()
-        if self._rewrite_ites_to_diamonds:
-            self._rewrite_ite_expressions(ail_graph)
+        self._rewrite_ite_expressions(ail_graph)
         self._remove_redundant_jump_blocks(ail_graph)
         if self._insert_labels:
             self._insert_block_labels(ail_graph)
@@ -260,10 +256,6 @@ class Clinic(Analysis):
         self._update_progress(50.0, text="Making callsites")
         _, stackarg_offsets = self._make_callsites(ail_graph, stack_pointer_tracker=spt)
 
-        # Run simplification passes
-        self._update_progress(65.0, text="Running simplifications 2")
-        ail_graph = self._run_simplification_passes(ail_graph, stage=OptimizationPassStage.AFTER_MAKING_CALLSITES)
-
         # Simplify the entire function for the second time
         self._update_progress(55.0, text="Simplifying function 2")
         self._simplify_function(
@@ -286,7 +278,7 @@ class Clinic(Analysis):
         )
 
         # Run simplification passes
-        self._update_progress(65.0, text="Running simplifications 3 ")
+        self._update_progress(65.0, text="Running simplifications 2")
         ail_graph = self._run_simplification_passes(ail_graph, stage=OptimizationPassStage.AFTER_GLOBAL_SIMPLIFICATION)
 
         # Simplify the entire function for the third time
@@ -321,7 +313,7 @@ class Clinic(Analysis):
         self._make_function_prototype(arg_list, variable_kb)
 
         # Run simplification passes
-        self._update_progress(95.0, text="Running simplifications 4")
+        self._update_progress(95.0, text="Running simplifications 3")
         ail_graph = self._run_simplification_passes(
             ail_graph, stage=OptimizationPassStage.AFTER_VARIABLE_RECOVERY, variable_kb=variable_kb
         )
@@ -531,7 +523,7 @@ class Clinic(Analysis):
         if type(block_node) is not BlockNode:
             return block_node
 
-        block = self.project.factory.block(block_node.addr, block_node.size, cross_insn_opt=False)
+        block = self.project.factory.block(block_node.addr, block_node.size)
 
         ail_block = ailment.IRSBConverter.convert(block.vex, self._ail_manager)
         return ail_block
@@ -1252,32 +1244,23 @@ class Clinic(Analysis):
                 expr.variable_offset = offset
 
         elif isinstance(expr, ailment.Expr.Const):
-            # custom string?
-            if hasattr(expr, "custom_string") and expr.custom_string is True:
-                s = self.kb.custom_strings[expr.value]
-                expr.tags["reference_values"] = {
-                    SimTypePointer(SimTypeChar().with_arch(self.project.arch)).with_arch(self.project.arch): s.decode(
-                        "ascii"
-                    ),
-                }
-            else:
-                # global variable?
-                global_vars = global_variables.get_global_variables(expr.value)
-                if not global_vars:
-                    # detect if there is a related symbol
-                    if self.project.loader.find_object_containing(expr.value):
-                        symbol = self.project.loader.find_symbol(expr.value)
-                        if symbol is not None:
-                            # Create a new global variable if there isn't one already
-                            global_vars = global_variables.get_global_variables(symbol.rebased_addr)
-                            if not global_vars:
-                                global_var = SimMemoryVariable(symbol.rebased_addr, symbol.size, name=symbol.name)
-                                global_variables.add_variable("global", global_var.addr, global_var)
-                                global_vars = {global_var}
-                if global_vars:
-                    global_var = next(iter(global_vars))
-                    expr.tags["reference_variable"] = global_var
-                    expr.tags["reference_variable_offset"] = 0
+            # global variable?
+            global_vars = global_variables.get_global_variables(expr.value)
+            if not global_vars:
+                # detect if there is a related symbol
+                if self.project.loader.find_object_containing(expr.value):
+                    symbol = self.project.loader.find_symbol(expr.value)
+                    if symbol is not None:
+                        # Create a new global variable if there isn't one already
+                        global_vars = global_variables.get_global_variables(symbol.rebased_addr)
+                        if not global_vars:
+                            global_var = SimMemoryVariable(symbol.rebased_addr, symbol.size, name=symbol.name)
+                            global_variables.add_variable("global", global_var.addr, global_var)
+                            global_vars = {global_var}
+            if global_vars:
+                global_var = next(iter(global_vars))
+                expr.tags["reference_variable"] = global_var
+                expr.tags["reference_variable_offset"] = 0
 
         elif isinstance(expr, ailment.Stmt.Call):
             self._link_variables_on_call(variable_manager, global_variables, block, stmt_idx, expr, is_expr=True)
@@ -1354,8 +1337,8 @@ class Clinic(Analysis):
         cond_jump_stmt = ailment.Stmt.ConditionalJump(
             ite_expr_stmt.idx,
             ite_expr.cond,
-            ailment.Expr.Const(None, None, true_block_addr, self.project.arch.bits, **ite_expr_stmt.tags),
-            ailment.Expr.Const(None, None, false_block_addr, self.project.arch.bits, **ite_expr_stmt.tags),
+            ailment.Expr.Const(None, None, true_block_addr, self.project.arch.bits),
+            ailment.Expr.Const(None, None, false_block_addr, self.project.arch.bits),
             **ite_expr_stmt.tags,
         )
         new_head_ail.statements.append(cond_jump_stmt)
@@ -1413,10 +1396,7 @@ class Clinic(Analysis):
             )
             end_block_ail = ailment.IRSBConverter.convert(end_block.vex, self._ail_manager)
         else:
-            try:
-                end_block_ail = next(iter(b for b in ail_graph if b.addr == end_block_addr))
-            except StopIteration:
-                return None
+            end_block_ail = next(iter(b for b in ail_graph if b.addr == end_block_addr))
 
         # last check: if the first instruction of the end block has Sar, then we bail (due to the peephole optimization
         # SarToSignedDiv)
@@ -1443,10 +1423,8 @@ class Clinic(Analysis):
         # in edges
         for src, _ in original_block_in_edges:
             if src is original_block:
-                # loop
-                ail_graph.add_edge(end_block_ail, new_head_ail)
-            else:
-                ail_graph.add_edge(src, new_head_ail)
+                raise ValueError("Unexpected...")
+            ail_graph.add_edge(src, new_head_ail)
 
         # triangle
         ail_graph.add_edge(new_head_ail, true_block_ail)

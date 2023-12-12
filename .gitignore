@@ -32,3 +32,4 @@ dist
 *.db
 *.dylib
 docs/_build
+angr_old

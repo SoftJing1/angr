@@ -18,7 +18,7 @@ class TidyStackAddr(PeepholeOptimizationExprBase):
     NAME = "Tidy stack addresses"
     expr_classes = (BinaryOp,)
 
-    def optimize(self, expr: BinaryOp, **kwargs):
+    def optimize(self, expr: BinaryOp):
         if expr.op not in ("Add", "Sub"):
             return None
 

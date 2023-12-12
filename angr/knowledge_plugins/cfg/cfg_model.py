@@ -770,16 +770,23 @@ class CFGModel(Serializable):
         if elfheader_sort:
             return elfheader_sort, elfheader_size
 
-        pointer_size = self.project.arch.bytes
-
-        # who's using it?
         irsb_addr, stmt_idx = None, None
         if xrefs is not None and seg_list is not None:
             try:
                 ref: "XRef" = next(iter(xrefs.get_xrefs_by_dst(data_addr)))
                 irsb_addr = ref.block_addr
+                stmt_idx = ref.stmt_idx
             except StopIteration:
                 pass
+
+            if seg_list.is_occupied(data_addr) and seg_list.occupied_by_sort(data_addr) == "code":
+                # it's a code reference
+                # TODO: Further check if it's the beginning of an instruction
+                return MemoryDataSort.CodeReference, 0
+
+        pointer_size = self.project.arch.bytes
+
+        # who's using it?
         if irsb_addr is not None and isinstance(self.project.loader.main_object, cle.MetaELF):
             plt_entry = self.project.loader.main_object.reverse_plt.get(irsb_addr, None)
             if plt_entry is not None:
@@ -801,9 +808,8 @@ class CFGModel(Serializable):
         if r is not None:
             return r
 
-        non_zero_max_size = 1024 if max_size == 0 else max_size
         try:
-            data = self.project.loader.memory.load(data_addr, min(1024, non_zero_max_size))
+            data = self.project.loader.memory.load(data_addr, min(1024, max_size))
         except KeyError:
             data = b""
 
@@ -832,13 +838,12 @@ class CFGModel(Serializable):
                         if running_failures > 3:
                             break
 
-                if last_success > 5:
-                    if content_holder is not None:
-                        string_data = data[: last_success * 2]
-                        if string_data.endswith(b"\x00\x00"):
-                            string_data = string_data[:-2]
-                        content_holder.append(string_data)
-                    return MemoryDataSort.UnicodeString, last_success * 2
+                if content_holder is not None:
+                    string_data = data[: last_success * 2]
+                    if string_data.endswith(b"\x00\x00"):
+                        string_data = string_data[:-2]
+                    content_holder.append(string_data)
+                return MemoryDataSort.UnicodeString, last_success
 
         if data:
             try:
@@ -857,21 +862,6 @@ class CFGModel(Serializable):
                 if zero_pos:
                     string_len += 1
                 return MemoryDataSort.String, min(string_len, 1024)
-
-        # is it a code reference?
-        irsb_addr, stmt_idx = None, None
-        if xrefs is not None and seg_list is not None:
-            try:
-                ref: "XRef" = next(iter(xrefs.get_xrefs_by_dst(data_addr)))
-                irsb_addr = ref.block_addr
-                stmt_idx = ref.stmt_idx
-            except StopIteration:
-                pass
-
-            if seg_list.is_occupied(data_addr) and seg_list.occupied_by_sort(data_addr) == "code":
-                # it's a code reference
-                # TODO: Further check if it's the beginning of an instruction
-                return MemoryDataSort.CodeReference, 0
 
         if data_type_guessing_handlers:
             for handler in data_type_guessing_handlers:

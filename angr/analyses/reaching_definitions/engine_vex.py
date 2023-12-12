@@ -147,11 +147,11 @@ class SimEngineRDVEX(
                 if self.state.is_heap_address(d):
                     heap_offset = self.state.get_heap_offset(d)
                     if heap_offset is not None:
-                        self.state.add_heap_use(heap_offset, 1)
+                        self.state.add_heap_use(heap_offset, 1, "Iend_BE")
                 elif self.state.is_stack_address(d):
                     stack_offset = self.state.get_stack_offset(d)
                     if stack_offset is not None:
-                        self.state.add_stack_use(stack_offset, 1)
+                        self.state.add_stack_use(stack_offset, 1, "Iend_BE")
 
         if self.state.exit_observed and reg_offset == self.arch.sp_offset:
             return
@@ -989,34 +989,6 @@ class SimEngineRDVEX(
                 return MultiValues(claripy.BVV(0, 1))
         return MultiValues(self.state.top(1))
 
-    def _handle_CmpGT(self, expr):
-        arg0, arg1 = expr.args
-        expr_0 = self._expr(arg0)
-        expr_1 = self._expr(arg1)
-
-        e0 = expr_0.one_value()
-        e1 = expr_1.one_value()
-        if e0 is not None and e1 is not None:
-            if not e0.symbolic and not e1.symbolic:
-                return MultiValues(claripy.BVV(1, 1) if e0.concrete_value > e1.concrete_value else claripy.BVV(0, 1))
-            elif e0 is e1:
-                return MultiValues(claripy.BVV(0, 1))
-        return MultiValues(self.state.top(1))
-
-    def _handle_CmpGE(self, expr):
-        arg0, arg1 = expr.args
-        expr_0 = self._expr(arg0)
-        expr_1 = self._expr(arg1)
-
-        e0 = expr_0.one_value()
-        e1 = expr_1.one_value()
-        if e0 is not None and e1 is not None:
-            if not e0.symbolic and not e1.symbolic:
-                return MultiValues(claripy.BVV(1, 1) if e0.concrete_value >= e1.concrete_value else claripy.BVV(0, 1))
-            elif e0 is e1:
-                return MultiValues(claripy.BVV(0, 1))
-        return MultiValues(self.state.top(1))
-
     # ppc only
     def _handle_CmpORD(self, expr):
         arg0, arg1 = expr.args
@@ -1029,8 +1001,6 @@ class SimEngineRDVEX(
 
         if e0 is not None and e1 is not None:
             if not e0.symbolic and not e1.symbolic:
-                e0 = e0.concrete_value
-                e1 = e1.concrete_value
                 if e0 < e1:
                     return MultiValues(claripy.BVV(0x8, bits))
                 elif e0 > e1:

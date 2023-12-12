@@ -1,4 +1,4 @@
-# pylint:disable=superfluous-parens,too-many-boolean-expressions,line-too-long
+# pylint:disable=superfluous-parens,too-many-boolean-expressions
 import itertools
 import logging
 import math
@@ -40,12 +40,6 @@ from angr.errors import (
     SimIRSBNoDecodeError,
 )
 from angr.utils.constants import DEFAULT_STATEMENT
-from angr.utils.funcid import (
-    is_function_security_check_cookie,
-    is_function_security_init_cookie,
-    is_function_security_init_cookie_win8,
-    is_function_likely_security_init_cookie,
-)
 from angr.analyses import ForwardAnalysis
 from .cfg_arch_options import CFGArchOptions
 from .cfg_base import CFGBase
@@ -1023,40 +1017,6 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int], CFGBase):  # pylin
         # no string is found
         return 0
 
-    def _scan_for_printable_widestrings(self, start_addr: int):
-        addr = start_addr
-        sz = []
-        is_sz = True
-
-        # Get data until we meet two null bytes
-        while self._inside_regions(addr):
-            l.debug("Searching address %x", addr)
-            val0 = self._load_a_byte_as_int(addr)
-            if val0 is None:
-                break
-            val1 = self._load_a_byte_as_int(addr + 1)
-            if val1 is None:
-                break
-            if val0 == 0 and val1 == 0:
-                if len(sz) <= 10:
-                    is_sz = False
-                break
-            if val0 != 0 and val1 == 0 and val0 in self.PRINTABLES:
-                sz += [val0, val1]
-                addr += 2
-                continue
-
-            is_sz = False
-            break
-
-        if sz and is_sz:
-            l.debug("Got a wide-string of %d wide chars", len(sz))
-            string_length = len(sz) + 2
-            return string_length
-
-        # no wide string is found
-        return 0
-
     def _scan_for_repeating_bytes(self, start_addr, repeating_byte, threshold=2):
         """
         Scan from a given address and determine the occurrences of a given byte.
@@ -1101,9 +1061,6 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int], CFGBase):  # pylin
 
         while True:
             string_length = self._scan_for_printable_strings(start_addr)
-            if string_length == 0:
-                string_length = self._scan_for_printable_widestrings(start_addr)
-
             if string_length:
                 self._seg_list.occupy(start_addr, string_length, "string")
                 start_addr += string_length
@@ -1620,11 +1577,6 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int], CFGBase):  # pylin
                 data_type_guessing_handlers=self._data_type_guessing_handlers,
             )
 
-        if self._collect_data_ref:
-            self._post_process_string_references()
-
-        self._rename_common_functions_and_symbols()
-
         CFGBase._post_analysis(self)
 
         # Clean up
@@ -1660,128 +1612,6 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int], CFGBase):  # pylin
                     l.exception("Error collecting XRefs for function %s.", f.name, exc_info=True)
                 else:
                     l.exception("Error collecting XRefs for function %#x.", f_addr, exc_info=True)
-
-    def _rename_common_functions_and_symbols(self):
-        """
-        This function implements logic for renaming some commonly seen functions in an architecture- and OS-specific
-        way.
-        """
-
-        if (
-            self.project.simos is not None
-            and self.project.arch.name == "AMD64"
-            and self.project.simos.name == "Win32"
-            and isinstance(self.project.loader.main_object, cle.PE)
-        ):
-            security_cookie_addr = self.project.loader.main_object.load_config.get("SecurityCookie", None)
-            security_check_cookie_found = False
-            security_init_cookie_found = False
-            if security_cookie_addr is not None:
-                if security_cookie_addr not in self.kb.labels:
-                    self.kb.labels[security_cookie_addr] = "_security_cookie"
-                # identify _security_init_cookie and _security_check_cookie
-                xrefs = self.kb.xrefs.get_xrefs_by_dst(security_cookie_addr)
-                tested_func_addrs = set()
-                for xref in xrefs:
-                    cfg_node = self.model.get_any_node(xref.block_addr)
-                    if cfg_node is None:
-                        continue
-                    func_addr = cfg_node.function_address
-                    if func_addr not in tested_func_addrs:
-                        func = self.kb.functions.get_by_addr(func_addr)
-                        if not security_check_cookie_found and is_function_security_check_cookie(
-                            func, self.project, security_cookie_addr
-                        ):
-                            security_check_cookie_found = True
-                            func.is_default_name = False
-                            func.name = "_security_check_cookie"
-                        elif not security_init_cookie_found and is_function_security_init_cookie(
-                            func, self.project, security_cookie_addr
-                        ):
-                            security_init_cookie_found = True
-                            func.is_default_name = False
-                            func.name = "_security_init_cookie"
-                        elif not security_init_cookie_found and is_function_security_init_cookie_win8(
-                            func, self.project, security_cookie_addr
-                        ):
-                            security_init_cookie_found = True
-                            func.is_default_name = False
-                            func.name = "_security_init_cookie"
-                        tested_func_addrs.add(func_addr)
-                    if security_init_cookie_found and security_check_cookie_found:
-                        # both are found. exit from the loop
-                        break
-
-            # special handling: some binaries do not have SecurityCookie set, but still contain _security_init_cookie
-            if security_init_cookie_found is False:
-                start_func = self.functions.get_by_addr(self.project.entry)
-                if start_func is not None:
-                    for callee in start_func.transition_graph:
-                        if isinstance(callee, Function):
-                            if not security_init_cookie_found and is_function_likely_security_init_cookie(callee):
-                                security_init_cookie_found = True
-                                callee.is_default_name = False
-                                callee.name = "_security_init_cookie"
-                                break
-
-    def _post_process_string_references(self) -> None:
-        """
-        Finds overlapping string references and retrofit them so that we see full strings in memory data.
-
-        This function does not work well for Go binaries or any other binaries where a large non-null-terminating
-        string table is used for all strings in the binary: All strings will be made much longer than they should have
-        been. We try to accommodate these cases using UPDATE_RATIO.
-        """
-
-        MAX_STRING_SIZE = 256
-        UPDATE_RATIO = 0.5
-
-        all_memory_data = sorted(list(self.model.memory_data.items()), key=lambda x: x[0])  # sorted by addr
-        to_update: Dict[int, bytes] = {}
-        total_string_refs: int = 0
-        for i, (addr, md) in enumerate(all_memory_data):
-            if not md.sort == MemoryDataSort.String:
-                continue
-            total_string_refs += 1
-            if md.content is None:
-                continue
-            if md.size != len(md.content):
-                # ending with a null byte
-                continue
-
-            new_content = md.content
-            last_end_addr = addr + md.size
-            for j in range(i + 1, len(all_memory_data)):
-                _, next_md = all_memory_data[j]
-                if (
-                    next_md.addr == last_end_addr
-                    and next_md.sort == MemoryDataSort.String
-                    and next_md.content is not None
-                ):
-                    new_content += next_md.content
-                    if next_md.size != len(next_md.content):
-                        # ending with a null byte
-                        break
-                    # otherwise, continue
-                    last_end_addr = next_md.addr + next_md.size
-                else:
-                    # another data item that's not a string or not immediately following the previous string item
-                    break
-
-                if len(new_content) > MAX_STRING_SIZE:
-                    new_content = new_content[:MAX_STRING_SIZE]
-                    break
-
-            if len(new_content) > len(md.content):
-                to_update[addr] = new_content
-
-        ratio = 1.0 if total_string_refs == 0 else len(to_update) / total_string_refs
-        if ratio < UPDATE_RATIO:
-            # update!
-            for addr, new_content in to_update.items():
-                md = self.model.memory_data[addr]
-                md.reference_size = len(new_content)
-                md.content = new_content
 
     # Methods to get start points for scanning
 
@@ -2079,10 +1909,9 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int], CFGBase):  # pylin
             ins_addr = addr
             for i, stmt in enumerate(irsb.statements):
                 if isinstance(stmt, pyvex.IRStmt.Exit):
-                    branch_ins_addr = last_ins_addr if self.project.arch.branch_delay_slot else ins_addr
-                    if self._is_branch_vex_artifact_only(irsb, branch_ins_addr, stmt):
-                        continue
-                    successors.append((i, branch_ins_addr, stmt.dst, stmt.jumpkind))
+                    successors.append(
+                        (i, last_ins_addr if self.project.arch.branch_delay_slot else ins_addr, stmt.dst, stmt.jumpkind)
+                    )
                 elif isinstance(stmt, pyvex.IRStmt.IMark):
                     last_ins_addr = ins_addr
                     ins_addr = stmt.addr + stmt.delta
@@ -2097,8 +1926,6 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int], CFGBase):  # pylin
                     idx_ = irsb.instruction_addresses.index(ins_addr)
                     if idx_ > 0:
                         branch_ins_addr = irsb.instruction_addresses[idx_ - 1]
-                elif self._is_branch_vex_artifact_only(irsb, branch_ins_addr, exit_stmt):
-                    continue
                 successors.append((stmt_idx, branch_ins_addr, exit_stmt.dst, exit_stmt.jumpkind))
 
         # default statement
@@ -2691,16 +2518,15 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int], CFGBase):  # pylin
                 )
 
                 if sec_2nd.is_executable and not self._seg_list.is_occupied(v):
-                    if v % self.project.arch.instruction_alignment == 0:
-                        # create a new CFG job
-                        ce = CFGJob(
-                            v,
-                            v,
-                            "Ijk_Boring",
-                            job_type=CFGJobType.DATAREF_HINTS,
-                        )
-                        self._pending_jobs.add_job(ce)
-                        self._register_analysis_job(v, ce)
+                    # create a new CFG job
+                    ce = CFGJob(
+                        v,
+                        v,
+                        "Ijk_Boring",
+                        job_type=CFGJobType.DATAREF_HINTS,
+                    )
+                    self._pending_jobs.add_job(ce)
+                    self._register_analysis_job(v, ce)
 
                 return
 
@@ -4642,39 +4468,6 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int], CFGBase):  # pylin
                 func = self.kb.functions.get_by_addr(func_addr)
                 func.info["get_pc"] = "ebx"
 
-        elif self.project.arch.name == "AMD64":
-            # determine if the function uses rbp as a general purpose register or not
-            if addr == func_addr or 0 < addr - func_addr <= 0x20:
-                rbp_as_gpr = True
-                cap = self._lift(addr, size=cfg_node.size).capstone
-                for insn in cap.insns:
-                    if (
-                        insn.mnemonic == "mov"
-                        and len(insn.operands) == 2
-                        and insn.operands[0].type == capstone.x86.X86_OP_REG
-                        and insn.operands[1].type == capstone.x86.X86_OP_REG
-                    ):
-                        if (
-                            insn.operands[0].reg == capstone.x86.X86_REG_RBP
-                            and insn.operands[1].reg == capstone.x86.X86_REG_RSP
-                        ):
-                            rbp_as_gpr = False
-                            break
-                    elif (
-                        insn.mnemonic == "lea"
-                        and len(insn.operands) == 2
-                        and insn.operands[0].type == capstone.x86.X86_OP_REG
-                        and insn.operands[1].type == capstone.x86.X86_OP_MEM
-                    ):
-                        if (
-                            insn.operands[0].reg == capstone.x86.X86_REG_RBP
-                            and insn.operands[1].mem.base == capstone.x86.X86_REG_RSP
-                        ):
-                            rbp_as_gpr = False
-                            break
-                func = self.kb.functions.get_by_addr(func_addr)
-                func.info["bp_as_gpr"] = rbp_as_gpr
-
     def _extract_node_cluster_by_dependency(self, addr, include_successors=False) -> Set[int]:
         to_remove = {addr}
         queue = [addr]
@@ -4693,57 +4486,6 @@ class CFGFast(ForwardAnalysis[CFGNode, CFGNode, CFGJob, int], CFGBase):  # pylin
                             to_remove.add(succ_addr)
                             queue.append(succ_addr)
         return to_remove
-
-    def _is_branch_vex_artifact_only(self, irsb, branch_ins_addr: int, exit_stmt) -> bool:
-        """
-        Check if an exit is merely the result of VEX lifting. We should drop these exits.
-        These exits point to the same instruction and do not terminate the block.
-
-        Example block:
-
-        1400061c2  lock or byte ptr [rsp], 0x0
-        1400061c7  mov     r9, r8
-        1400061ca  shr     r9, 0x5
-        1400061ce  jne     0x1400060dc
-
-        VEX block:
-
-        00 | ------ IMark(0x1400061c2, 5, 0) ------
-        01 | t3 = GET:I64(rsp)
-        02 | t2 = LDle:I8(t3)
-        03 | t(4,4294967295) = CASle(t3 :: (t2,None)->(t2,None))
-        04 | t13 = CasCmpNE8(t4,t2)
-        05 | if (t13) { PUT(rip) = 0x1400061c2; Ijk_Boring }
-        06 | ------ IMark(0x1400061c7, 3, 0) ------
-        07 | t15 = GET:I64(r8)
-        08 | ------ IMark(0x1400061ca, 4, 0) ------
-        09 | t9 = Shr64(t15,0x05)
-        10 | t16 = Shr64(t15,0x04)
-        11 | PUT(cc_op) = 0x0000000000000024
-        12 | PUT(cc_dep1) = t9
-        13 | PUT(cc_dep2) = t16
-        14 | PUT(r9) = t9
-        15 | PUT(rip) = 0x00000001400061ce
-        16 | ------ IMark(0x1400061ce, 6, 0) ------
-        17 | t29 = GET:I64(cc_ndep)
-        18 | t30 = amd64g_calculate_condition(0x0000000000000004,0x0000000000000024,t9,t16,t29):Ity_I64
-        19 | t25 = 64to1(t30)
-        20 | if (t25) { PUT(rip) = 0x1400061d4; Ijk_Boring }
-        NEXT: PUT(rip) = 0x00000001400060dc; Ijk_Boring
-
-        Statement 5 should not introduce a new exit in the CFG.
-        """
-
-        if (
-            not self.project.arch.branch_delay_slot
-            and irsb.instruction_addresses
-            and branch_ins_addr != irsb.instruction_addresses[-1]
-            and isinstance(exit_stmt.dst, pyvex.const.IRConst)
-            and exit_stmt.dst.value == branch_ins_addr
-            and exit_stmt.jumpkind == "Ijk_Boring"
-        ):
-            return True
-        return False
 
     def _remove_jobs_by_source_node_addr(self, addr: int):
         self._remove_job(lambda j: j.src_node is not None and j.src_node.addr == addr)

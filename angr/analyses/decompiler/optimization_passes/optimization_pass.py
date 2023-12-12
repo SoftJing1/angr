@@ -35,12 +35,11 @@ class OptimizationPassStage(Enum):
 
     AFTER_AIL_GRAPH_CREATION = 0
     AFTER_SINGLE_BLOCK_SIMPLIFICATION = 1
-    AFTER_MAKING_CALLSITES = 2
-    AFTER_GLOBAL_SIMPLIFICATION = 3
-    AFTER_VARIABLE_RECOVERY = 4
-    BEFORE_REGION_IDENTIFICATION = 5
-    DURING_REGION_IDENTIFICATION = 6
-    AFTER_STRUCTURING = 7
+    AFTER_GLOBAL_SIMPLIFICATION = 2
+    AFTER_VARIABLE_RECOVERY = 3
+    BEFORE_REGION_IDENTIFICATION = 4
+    DURING_REGION_IDENTIFICATION = 5
+    AFTER_STRUCTURING = 6
 
 
 class BaseOptimizationPass:
@@ -54,8 +53,6 @@ class BaseOptimizationPass:
     STRUCTURING: Optional[
         str
     ] = None  # specifies if this optimization pass is specific to a certain structuring algorithm
-    NAME = "N/A"
-    DESCRIPTION = "N/A"
 
     def __init__(self, func):
         self._func: "Function" = func

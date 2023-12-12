@@ -70,6 +70,8 @@ class SimState(PluginHub):
     memory: "DefaultMemory"
     callstack: "CallStack"
     mem: "SimMemView"
+    callstack: "CallStack"
+    mem: "SimMemView"
     history: "SimStateHistory"
     inspect: "SimInspector"
     jni_references: "SimStateJNIReferences"

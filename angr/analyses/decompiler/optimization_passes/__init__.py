@@ -50,8 +50,6 @@ def get_optimization_passes(arch, platform):
 
     if platform is not None:
         platform = platform.lower()
-    if platform == "win32":
-        platform = "windows"  # sigh
 
     passes = []
     for pass_, _ in _all_optimization_passes:
@@ -82,7 +80,3 @@ def get_default_optimization_passes(arch: Union[Arch, str], platform: Optional[s
             passes.append(pass_)
 
     return passes
-
-
-def register_optimization_pass(opt_pass, enable_by_default: bool):
-    _all_optimization_passes.append((opt_pass, enable_by_default))

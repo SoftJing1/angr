@@ -1,6 +1,7 @@
 import os
 import logging
 import networkx
+import string
 import itertools
 from collections import defaultdict
 from typing import Union, Optional, Iterable, Set
@@ -13,7 +14,6 @@ from archinfo.arch_arm import get_real_address_if_arm
 import claripy
 
 from angr.block import Block
-from angr.knowledge_plugins.cfg.memory_data import MemoryDataSort
 
 from ...codenode import CodeNode, BlockNode, HookNode, SyscallNode
 from ...serializable import Serializable
@@ -80,7 +80,6 @@ class Function(Serializable):
         "is_alignment",
         "is_prototype_guessed",
         "ran_cca",
-        "_cyclomatic_complexity",
     )
 
     def __init__(
@@ -161,9 +160,6 @@ class Function(Serializable):
 
         self.info = {}  # storing special information, like $gp values for MIPS32
         self.tags = ()  # store function tags. can be set manually by performing CodeTagging analysis.
-
-        # Initialize _cyclomatic_complexity to None
-        self._cyclomatic_complexity = None
 
         # TODO: Can we remove the following two members?
         # Register offsets of those arguments passed in registers
@@ -307,42 +303,6 @@ class Function(Serializable):
                 pass
 
     @property
-    def cyclomatic_complexity(self):
-        """
-        The cyclomatic complexity of the function.
-
-        Cyclomatic complexity is a software metric used to indicate the complexity of a program.
-        It is a quantitative measure of the number of linearly independent paths through a program's source code.
-        It is computed using the formula: M = E - N + 2P, where
-        E = the number of edges in the graph,
-        N = the number of nodes in the graph,
-        P = the number of connected components.
-
-        The cyclomatic complexity value is lazily computed and cached for future use.
-        Initially this value is None until it is computed for the first time
-
-        :return: The cyclomatic complexity of the function.
-        :rtype: int
-        """
-        if self._cyclomatic_complexity is None:
-            self._cyclomatic_complexity = (
-                self.transition_graph.number_of_edges() - self.transition_graph.number_of_nodes() + 2
-            )
-        return self._cyclomatic_complexity
-
-    @property
-    def xrefs(self):
-        """
-        An iterator of all xrefs of the current function.
-
-        :return: angr.knowledge_plugins.xrefs.xref.XRef instances.
-        """
-        for block in self.blocks:
-            yield from self._function_manager._kb.xrefs.get_xrefs_by_ins_addr_region(
-                block.addr, block.addr + block.size
-            )
-
-    @property
     def block_addrs(self):
         """
         An iterator of all local block addresses in the current function.
@@ -453,28 +413,49 @@ class Function(Serializable):
         """
         return FunctionParser.parse_from_cmsg(cmsg, **kwargs)
 
-    def string_references(self, minimum_length=2):
+    def string_references(self, minimum_length=2, vex_only=False):
         """
         All of the constant string references used by this function.
 
         :param minimum_length:  The minimum length of strings to find (default is 1)
-        :return:                A generator yielding tuples of (address, string) where is address
-                                is the location of the string in memory.
+        :param vex_only:        Only analyze VEX IR, don't interpret the entry state to detect additional constants.
+        :return:                A list of tuples of (address, string) where is address is the location of the string in
+                                memory.
         """
+        strings = []
+        memory = self._project.loader.memory
 
-        cfg = self._function_manager._kb.cfgs.get_most_accurate()
+        # get known instruction addresses and call targets
+        # these addresses cannot be string references, but show up frequently in the runtime values
+        known_executable_addresses = set()
+        for block in self.blocks:
+            known_executable_addresses.update(block.instruction_addrs)
+        for function in self._function_manager.values():
+            known_executable_addresses.update({x.addr for x in function.graph.nodes()})
 
-        for x in self.xrefs:
-            try:
-                md = cfg.memory_data[x.dst]
-            except KeyError:
-                continue
-            if md.sort not in {MemoryDataSort.String, MemoryDataSort.UnicodeString}:
-                continue
-            if len(md.content) < minimum_length:
-                continue
+        # loop over all local runtime values and check if the value points to a printable string
+        for addr in self.local_runtime_values if not vex_only else self.code_constants:
+            if not isinstance(addr, claripy.fp.FPV) and addr in memory:
+                # check that the address isn't an pointing to known executable code
+                # and that it isn't an indirect pointer to known executable code
+                try:
+                    possible_pointer = memory.unpack_word(addr)
+                    if addr not in known_executable_addresses and possible_pointer not in known_executable_addresses:
+                        # build string
+                        stn = ""
+                        offset = 0
+                        current_char = chr(memory[addr + offset])
+                        while current_char in string.printable:
+                            stn += current_char
+                            offset += 1
+                            current_char = chr(memory[addr + offset])
 
-            yield (md.addr, md.content)
+                        # check that the string was a null terminated string with minimum length
+                        if current_char == "\x00" and len(stn) >= minimum_length:
+                            strings.append((addr, stn))
+                except KeyError:
+                    pass
+        return strings
 
     @property
     def local_runtime_values(self):
@@ -593,7 +574,6 @@ class Function(Serializable):
         s += "  Alignment: %s\n" % (self.alignment)
         s += f"  Arguments: reg: {self._argument_registers}, stack: {self._argument_stack_variables}\n"
         s += "  Blocks: [%s]\n" % ", ".join(["%#x" % i for i in self.block_addrs])
-        s += "  Cyclomatic Complexity: %s\n" % self.cyclomatic_complexity
         s += "  Calling convention: %s" % self.calling_convention
         return s
 
@@ -667,14 +647,6 @@ class Function(Serializable):
         :return: the function's Symbol, if any
         """
         return self.binary.loader.find_symbol(self.addr)
-
-    @property
-    def pseudocode(self) -> str:
-        """
-        :return: the function's pseudocode
-        """
-        dec = self.project.analyses.Decompiler(self, cfg=self._function_manager._kb.cfgs.get_most_accurate())
-        return dec.codegen.text
 
     def add_jumpout_site(self, node):
         """

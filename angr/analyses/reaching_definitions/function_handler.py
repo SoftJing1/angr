@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING, Iterable, List, Set, Optional, Union, Callable, cast, Literal
+from typing import TYPE_CHECKING, Iterable, List, Set, Optional, Union, Callable
 from dataclasses import dataclass, field
 import logging
 from functools import wraps
@@ -22,7 +22,7 @@ from angr.knowledge_plugins.key_definitions.constants import ObservationPointTyp
 if TYPE_CHECKING:
     from angr.knowledge_plugins.key_definitions.rd_model import ReachingDefinitionsModel
     from angr.analyses.reaching_definitions.rd_state import ReachingDefinitionsState
-    from angr.analyses.reaching_definitions.reaching_definitions import ReachingDefinitionsAnalysis, ObservationPoint
+    from angr.analyses.reaching_definitions.reaching_definitions import ReachingDefinitionsAnalysis
 
 l = logging.getLogger(__name__)
 
@@ -409,7 +409,7 @@ class FunctionHandler:
         # translate all the dep atoms into dep defns
         for effect in data.effects:
             if effect.sources_defns is None and effect.sources:
-                effect.sources_defns = set().union(*(state.get_definitions(atom) for atom in effect.sources))
+                effect.sources_defns = set().union(*(set(state.get_definitions(atom)) for atom in effect.sources))
                 if not effect.sources_defns:
                     effect.sources_defns = {Definition(atom, ExternalCodeLocation()) for atom in effect.sources}
                 other_input_defns |= effect.sources_defns - all_args_defns
@@ -462,10 +462,7 @@ class FunctionHandler:
         assert data.cc is not None
         assert data.prototype is not None
         if data.prototype.returnty is not None:
-            if not isinstance(data.prototype.returnty, SimTypeBottom):
-                data.ret_values = MultiValues(state.top(data.prototype.returnty.with_arch(state.arch).size))
-            else:
-                data.ret_values = MultiValues(state.top(state.arch.bits))
+            data.ret_values = MultiValues(state.top(data.prototype.returnty.with_arch(state.arch).size))
         if data.guessed_prototype:
             # use all!
             # TODO should we use some number of stack variables as well?
@@ -506,25 +503,10 @@ class FunctionHandler:
         """
         assert state.analysis is not None
         assert data.function is not None
-
-        # Set up the additional observation points of the return sites
-        # They will be gathered and merged in get_exit_livedefinitions
-        # get_exit_livedefinitions is currently only using ret_sites, but an argument could be made that it should
-        # include jumpout sites as well. In the CFG generation tail call sites seem to be treated as return sites
-        # and not as jumpout sites, so we are following that convention here.
-        return_observation_points: List[ObservationPoint] = [
-            (
-                cast(Literal["node"], "node"),  # pycharm doesn't treat a literal string, as Literal[] by default...
-                block.addr,
-                ObservationPointType.OP_AFTER,
-            )
-            for block in data.function.ret_sites
-        ]
-
         sub_rda = state.analysis.project.analyses.ReachingDefinitions(
             data.function,
             observe_all=state.analysis._observe_all,
-            observation_points=(state.analysis._observation_points or []) + return_observation_points,
+            observation_points=state.analysis._observation_points,
             observe_callback=state.analysis._observe_callback,
             dep_graph=state.dep_graph,
             function_handler=self,
@@ -542,7 +524,7 @@ class FunctionHandler:
     @staticmethod
     def c_args_as_atoms(state: "ReachingDefinitionsState", cc: SimCC, prototype: SimTypeFunction) -> List[Set[Atom]]:
         if not prototype.variadic:
-            sp_value = state.get_one_value(Register(state.arch.sp_offset, state.arch.bytes), strip_annotations=True)
+            sp_value = state.get_one_value(Register(state.arch.sp_offset, state.arch.bytes))
             sp = state.get_stack_offset(sp_value) if sp_value is not None else None
             atoms = []
             for arg in cc.arg_locs(prototype):

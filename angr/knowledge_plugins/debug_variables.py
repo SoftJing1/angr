@@ -214,8 +214,8 @@ class DebugVariableManager(KnowledgeBasePlugin):
                         self.add_variable(cle_var, cu_curr.min_addr, cu_curr.max_addr)
                 for subp in cu_curr.functions.values():
                     for cle_var in subp.local_variables:
-                        low_pc = cle_var.lexical_block.low_pc + obj.mapped_base
-                        high_pc = cle_var.lexical_block.high_pc + obj.mapped_base
+                        low_pc = cle_var.lexical_block.low_pc #+ obj.mapped_base
+                        high_pc = cle_var.lexical_block.high_pc #+ obj.mapped_base
                         self.add_variable(cle_var, low_pc, high_pc)
 
 
